@@ -6,6 +6,8 @@ from src.features import build_preprocessor
 # Chosen in notebook 05 by maximizing expected profit on the training data
 BEST_THRESHOLD = 0.34
 
+MODEL_VERSION = "xgboost-baseline-v1"
+
 
 def build_model(X_train, y_train):
     """Create the full pipeline (preprocessing + XGBoost), not yet trained."""

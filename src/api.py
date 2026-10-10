@@ -6,7 +6,8 @@ import pandas as pd
 import shap
 from fastapi import FastAPI
 
-from src.model import BEST_THRESHOLD
+from src.db import init_db, log_prediction
+from src.model import BEST_THRESHOLD, MODEL_VERSION
 from src.schemas import CustomerInput, PredictionOut, Reason
 
 MODEL_PATH = Path(__file__).resolve().parent.parent / "models" / "churn_model.joblib"
@@ -22,11 +23,12 @@ async def lifespan(app: FastAPI):
     state["pipeline"] = pipeline
     state["explainer"] = shap.TreeExplainer(pipeline.named_steps["clf"])
     state["feature_names"] = [n.split("__", 1)[1] for n in prep.get_feature_names_out()]
+    init_db()
     yield
     state.clear()  # runs when the server stops
 
 
-app = FastAPI(title="Churn Prediction API", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Churn Prediction API", version="0.2.0", lifespan=lifespan)
 
 
 @app.get("/health")
@@ -37,11 +39,10 @@ def health():
 @app.post("/predict", response_model=PredictionOut)
 def predict(customer: CustomerInput):
     pipeline = state["pipeline"]
-    row = pd.DataFrame([customer.model_dump()])  # one-row table, like our training data
+    row = pd.DataFrame([customer.model_dump()])
 
     risk_score = float(pipeline.predict_proba(row)[0, 1])
 
-    # Why? SHAP values for this one customer
     X_t = pipeline.named_steps["prep"].transform(row)
     if hasattr(X_t, "toarray"):
         X_t = X_t.toarray()
@@ -62,9 +63,19 @@ def predict(customer: CustomerInput):
         for name, value in top
     ]
 
-    return PredictionOut(
+    response = PredictionOut(
         risk_score=round(risk_score, 3),
         flag_for_offer=risk_score >= BEST_THRESHOLD,
         threshold=BEST_THRESHOLD,
         top_reasons=reasons,
     )
+
+    log_prediction(
+        model_version=MODEL_VERSION,
+        risk_score=response.risk_score,
+        flag_for_offer=response.flag_for_offer,
+        threshold=response.threshold,
+        features=customer.model_dump(),
+        top_reasons=[r.model_dump() for r in response.top_reasons],
+    )
+    return response
