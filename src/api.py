@@ -1,0 +1,70 @@
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+import joblib
+import pandas as pd
+import shap
+from fastapi import FastAPI
+
+from src.model import BEST_THRESHOLD
+from src.schemas import CustomerInput, PredictionOut, Reason
+
+MODEL_PATH = Path(__file__).resolve().parent.parent / "models" / "churn_model.joblib"
+
+state = {}  # holds the model and explainer while the app runs
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Runs once when the server starts
+    pipeline = joblib.load(MODEL_PATH)
+    prep = pipeline.named_steps["prep"]
+    state["pipeline"] = pipeline
+    state["explainer"] = shap.TreeExplainer(pipeline.named_steps["clf"])
+    state["feature_names"] = [n.split("__", 1)[1] for n in prep.get_feature_names_out()]
+    yield
+    state.clear()  # runs when the server stops
+
+
+app = FastAPI(title="Churn Prediction API", version="0.1.0", lifespan=lifespan)
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok", "model_loaded": "pipeline" in state}
+
+
+@app.post("/predict", response_model=PredictionOut)
+def predict(customer: CustomerInput):
+    pipeline = state["pipeline"]
+    row = pd.DataFrame([customer.model_dump()])  # one-row table, like our training data
+
+    risk_score = float(pipeline.predict_proba(row)[0, 1])
+
+    # Why? SHAP values for this one customer
+    X_t = pipeline.named_steps["prep"].transform(row)
+    if hasattr(X_t, "toarray"):
+        X_t = X_t.toarray()
+    contributions = state["explainer"].shap_values(X_t)[0]
+
+    top = sorted(
+        zip(state["feature_names"], contributions),
+        key=lambda pair: abs(pair[1]),
+        reverse=True,
+    )[:3]
+
+    reasons = [
+        Reason(
+            feature=name,
+            impact=round(float(value), 3),
+            direction="increases churn risk" if value > 0 else "decreases churn risk",
+        )
+        for name, value in top
+    ]
+
+    return PredictionOut(
+        risk_score=round(risk_score, 3),
+        flag_for_offer=risk_score >= BEST_THRESHOLD,
+        threshold=BEST_THRESHOLD,
+        top_reasons=reasons,
+    )
