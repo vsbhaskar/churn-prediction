@@ -48,19 +48,22 @@ def predict(customer: CustomerInput):
         X_t = X_t.toarray()
     contributions = state["explainer"].shap_values(X_t)[0]
 
-    top = sorted(
-        zip(state["feature_names"], contributions),
-        key=lambda pair: abs(pair[1]),
-        reverse=True,
-    )[:3]
+    # Add up SHAP values per ORIGINAL column (all Contract_* columns together)
+    grouped = {}
+    for name, value in zip(state["feature_names"], contributions):
+        source_col = name.split("_", 1)[0]
+        grouped[source_col] = grouped.get(source_col, 0.0) + float(value)
+
+    top = sorted(grouped.items(), key=lambda pair: abs(pair[1]), reverse=True)[:3]
 
     reasons = [
         Reason(
-            feature=name,
-            impact=round(float(value), 3),
-            direction="increases churn risk" if value > 0 else "decreases churn risk",
+            feature=col,
+            value=str(row.iloc[0][col]),
+            impact=round(impact, 3),
+            direction="increases churn risk" if impact > 0 else "decreases churn risk",
         )
-        for name, value in top
+        for col, impact in top
     ]
 
     response = PredictionOut(

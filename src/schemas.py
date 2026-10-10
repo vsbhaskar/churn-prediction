@@ -63,6 +63,7 @@ class CustomerInput(BaseModel):
 
 class Reason(BaseModel):
     feature: str
+    value: str
     impact: float
     direction: str
 
